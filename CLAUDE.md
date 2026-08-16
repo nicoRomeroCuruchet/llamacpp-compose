@@ -5,8 +5,9 @@ Guidance for Claude Code working in this repository.
 ## What this is
 
 A `docker compose` wrapper around `ghcr.io/ggml-org/llama.cpp:server-cuda` that serves a
-GGUF model over an OpenAI-compatible HTTP API. It runs on **`udesa`** (RTX 3090, 24 GB) and
-currently serves **Qwen3.8-27B** (`UD-Q4_K_XL`, 17.9 GB).
+GGUF model over an OpenAI-compatible HTTP API. It is model- and GPU-agnostic; the setup
+the documentation measures against is an RTX 3090 (24 GB) serving **Qwen3.8-27B**
+(`UD-Q4_K_XL`, 17.9 GB).
 
 There is no application code here. The repo is four things: a compose file, an `.env` that
 parameterizes it, two operational shell scripts, and the documentation. Read `README.md`
@@ -99,14 +100,15 @@ output goes to `reasoning_content` first. README §4 covers this.
   faster.
 - **VRAM is the binding constraint, not disk or RAM.** Before raising `CTX`, run
   `serve.sh vram` and check the headroom against README §5 and `EXPERIMENTS.md` §7. Note
-  that this model is hybrid — only 17 of 65 blocks carry KV — so the usual
-  "layers x heads x context" estimate overshoots by 4x. Use `scripts/gguf-info.py`.
+  that the reference model is hybrid — only 17 of 65 blocks carry KV — so the usual
+  "layers x heads x context" estimate overshoots several-fold. Never assume this either
+  way for a new model: run `scripts/gguf-info.py` against the actual `.gguf`.
 
 ## Reaching the server
 
 ```
 local     http://127.0.0.1:8080/v1
-tailnet   https://udesa.tailnet-name.ts.net/v1      (via tailscale serve, TLS)
+tailnet   https://<node>.<tailnet>.ts.net/v1        (via tailscale serve, TLS)
 ```
 
 There is **no authentication** on the server. Anything that widens its exposure — changing

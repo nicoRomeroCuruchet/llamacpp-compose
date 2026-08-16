@@ -1,11 +1,29 @@
-# llm-server
+# llamacpp-compose
 
 A local LLM server running **llama.cpp on the GPU**, packaged in Docker and driven with
 `docker compose`. It exposes an **OpenAI-compatible** API, so any client that accepts a
 `base_url` can talk to it unmodified.
 
-Set up on **`udesa`** (RTX 3090, 24 GB) to serve **Qwen3.8-27B**, but nothing here is tied
-to that model or that machine: edit `.env` and it will serve any `.gguf`.
+Nothing here is tied to a particular model or GPU: point `.env` at any `.gguf` that fits
+on the card and it serves that instead. Every flag has a documented default and a stated
+reason for it.
+
+### The reference setup
+
+Throughput, VRAM and context figures appear throughout this file. They were all measured
+on one configuration, named here so the numbers can be judged and reproduced rather than
+taken on faith:
+
+| | |
+|---|---|
+| GPU | NVIDIA RTX 3090, 24 GB |
+| Model | Qwen3.8-27B, `UD-Q4_K_XL` (17.9 GB) |
+| Image | `ghcr.io/ggml-org/llama.cpp:server-cuda`, build 10335 |
+
+**A different card or model will give different numbers**, and some of the conclusions
+below depend on the model's architecture rather than on llama.cpp. `EXPERIMENTS.md`
+records how each measurement was taken so you can rerun it on your own hardware;
+`scripts/gguf-info.py` recomputes the memory arithmetic for any `.gguf`.
 
 ---
 
@@ -56,8 +74,9 @@ server is misconfigured but is only the wrong method. Use `/` for a browser.
 
 ## 2. Host requirements
 
-- An NVIDIA driver (**595.84** here) and a GPU with enough VRAM — see the arithmetic in §5.
-- **`nvidia-container-toolkit`** (**1.19.1** here). Without it the container **cannot see
+- An NVIDIA driver new enough for the image's CUDA build, and a GPU with enough VRAM —
+  see the arithmetic in §5.
+- **`nvidia-container-toolkit`**. Without it the container **cannot see
   the GPU** and llama.cpp silently falls back to the CPU. Check with:
 
   ```bash
@@ -65,7 +84,7 @@ server is misconfigured but is only the wrong method. Use `/` for a browser.
   docker run --rm --gpus all nvidia/cuda:12.6.3-base-ubuntu24.04 nvidia-smi
   ```
 
-- `docker compose` v2+ (**v5.4.0** here).
+- `docker compose` v2 or newer.
 - **No CUDA toolkit or `nvcc` needed on the host.** It all ships inside the image.
 
 ---
@@ -73,8 +92,8 @@ server is misconfigured but is only the wrong method. Use `/` for a browser.
 ## 3. Getting started
 
 ```bash
-git clone git@github.com:nicoRomeroCuruchet/llamacpp-compose.git ~/llm-server
-cd ~/llm-server
+git clone https://github.com/nicoRomeroCuruchet/llamacpp-compose.git
+cd llamacpp-compose
 cp .env.example .env
 $EDITOR .env                                     # check MODELS_DIR and MODEL_FILE
 
@@ -156,8 +175,8 @@ If acceptance stays low with `draft-mtp` too, lower `SPEC_P_MIN` to draft more f
 set `SPEC_TYPE=none`: rejected drafts are wasted compute, and a bad drafter is slower than
 no drafter at all.
 
-Measured on this machine, 700-token generation from a short coding prompt (the full
-write-up, including the negative results, is in `EXPERIMENTS.md` §1):
+Measured on the reference setup, 700-token generation from a short coding prompt (the
+full write-up, including the negative results, is in `EXPERIMENTS.md` §1):
 
 | `SPEC_TYPE` | `N_MAX` | `P_MIN` | decode | acceptance | VRAM |
 |---|---|---|---|---|---|
@@ -203,34 +222,54 @@ The one thing to work out before picking a quantization and a context size:
 total VRAM  ≥  .gguf size  +  KV cache  +  compute buffers
 ```
 
-On the 3090 (24 GB) with Qwen3.8-27B **UD-Q4_K_XL** (17.9 GB) that leaves ~7 GB for the KV
-cache and buffers. Measured in practice with the current settings: **21,074 MiB of
-24,576 MiB in use**, so 3,502 MiB are free. Check with `serve.sh vram`.
+The `.gguf` size is on disk. The compute buffers are a few hundred MiB. **The KV cache is
+the term people get wrong**, and the usual back-of-envelope can be out by a large factor,
+so read it off the model instead of guessing:
 
-The KV cache is far cheaper here than the model's size suggests, because Qwen3.8-27B is
-**hybrid**: only 17 of its 65 blocks carry a KV cache at all, and the other 48 hold a
-recurrent state of fixed size. That works out to **36.1 KiB per token** at `q8_0`, so
-`CTX=65536` costs 2,312 MiB and the ceiling on this card is **131,072**, not the model's
-declared 262,144. The arithmetic, the measurement it was checked against and the tool that
-produced it are in **`EXPERIMENTS.md` §6–§7**; `scripts/gguf-info.py` recomputes it for any
-other `.gguf`.
+```bash
+python3 scripts/gguf-info.py /path/to/model.gguf
+```
+
+That prints the cost per token at `f16`, `q8_0` and `q4_0`, the total at several context
+sizes, and — the part that catches people out — **how many blocks actually carry a KV
+cache**. On a dense transformer that is all of them. On a **hybrid** model it is not:
+architectures that interleave full attention with linear-attention or SSM blocks only
+store KV in the full-attention ones, and the rest hold a recurrent state whose size does
+not grow with the context at all. Assuming otherwise overestimates the cache several-fold
+and makes a context size look impossible when it fits comfortably.
+
+Note also that llama.cpp **allocates the entire KV cache when the model loads**, not as
+the conversation grows. Raising `CTX` bills the VRAM immediately, whether or not the
+window is ever used.
+
+### Worked example: Qwen3.8-27B on a 24 GB card
+
+The reference setup, as a template for doing the same on yours. The 17.9 GB of weights
+leave ~7 GB for cache and buffers; measured in practice, **21,074 MiB of 24,576 MiB in
+use**, so 3,502 MiB free. Check yours with `serve.sh vram`.
+
+This model turns out to be hybrid — only **17 of its 65 blocks** carry a KV cache — which
+works out to **36.1 KiB per token** at `q8_0`. So `CTX=65536` costs 2,312 MiB, and the
+ceiling on this card is **131,072 tokens**, not the 262,144 the model declares. A dense
+estimate would have said ~40k and been wrong by more than 3x. Full derivation, and the
+measurement it was checked against, in **`EXPERIMENTS.md` §6–§7**.
 
 Available quantizations of this model, to choose from with some basis:
 
 | File | Size | Fits in 24 GB |
 |---|---|---|
 | `UD-Q3_K_XL` | 13.4 GB | yes, with plenty of context |
-| **`UD-Q4_K_XL`** | **17.9 GB** | **yes — the one in use** |
+| **`UD-Q4_K_XL`** | **17.9 GB** | **yes — the one measured here** |
 | `UD-Q5_K_XL` | 20.2 GB | barely, with a small context |
 | `UD-Q6_K_XL` | 25.9 GB | **no** |
 
 The `UD-*` ones are *Unsloth Dynamic*: they quantize differently per layer and outperform a
 uniform quantization of the same size.
 
-`CTX` stays at 65536 rather than being raised to the ceiling because peak context under
-real agent load is 22,564 tokens — a third of the window — and llama.cpp allocates the
-whole KV cache at load time. The trigger to raise it is `truncated = 1` in the logs, not
-free VRAM existing. `EXPERIMENTS.md` §7.
+`CTX` is left at 65536 rather than raised to that ceiling, because peak context under real
+agent load was 22,564 tokens — a third of the window — and the VRAM would be reserved
+either way. The trigger to raise it is `truncated = 1` appearing in the logs, not free
+VRAM existing. `EXPERIMENTS.md` §7.
 
 **If it does not fit**, in order of preference: lower `CTX`, switch `KV_TYPE` to `q4_0`,
 pick a smaller quantization. Touch `NGL` only as a last resort — offloading layers to the
@@ -282,12 +321,12 @@ sudo tailscale serve --https=443 off  # tear it down
 `tailnet-name` below. It then answers at:
 
 ```
-https://udesa.tailnet-name.ts.net/v1/chat/completions      model: qwen38-27b
-https://udesa.tailnet-name.ts.net/                         web UI, in a browser
+https://gpu-box.tailnet-name.ts.net/v1/chat/completions      model: qwen38-27b
+https://gpu-box.tailnet-name.ts.net/                         web UI, in a browser
 ```
 
 ```bash
-curl -s https://udesa.tailnet-name.ts.net/v1/chat/completions \
+curl -s https://gpu-box.tailnet-name.ts.net/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"qwen38-27b","messages":[{"role":"user","content":"hello"}]}'
 ```
@@ -296,7 +335,7 @@ From the OpenAI SDK, on any tailnet node:
 
 ```python
 from openai import OpenAI
-c = OpenAI(base_url="https://udesa.tailnet-name.ts.net/v1", api_key="not-needed")
+c = OpenAI(base_url="https://gpu-box.tailnet-name.ts.net/v1", api_key="not-needed")
 ```
 
 Note the `base_url` has **no trailing slash**. With one, the SDK concatenates into
@@ -317,7 +356,7 @@ loopback — `tailscale ip -4` prints it:
 BIND=100.x.y.z   # in .env, then ./scripts/serve.sh down && up
 ```
 
-That serves it at `http://udesa:8080` (no TLS) and is still tailnet-only, because that IP
+That serves it at `http://gpu-box:8080` (no TLS) and is still tailnet-only, because that IP
 exists solely on the tailscale interface. In that case `tailscale serve` adds nothing and
 should be turned off — otherwise there are two paths to the same port, and `serve` returns
 502 while proxying to a loopback address nothing listens on anymore.
@@ -357,3 +396,13 @@ docker run --rm ghcr.io/ggml-org/llama.cpp:server-cuda --help    # this build's 
   a saved HTTP error response both go unnoticed if all you check is that "the file exists".
 - **`curl` instead of `huggingface_hub`.** This is a shared machine; downloading one file
   is not worth installing Python packages for. `curl -C -` resumes, too.
+
+---
+
+## 10. License
+
+MIT — see `LICENSE`.
+
+Note that this covers the compose file, the scripts and the documentation only. The
+llama.cpp image and any model you download carry their own licenses; Qwen3.8-27B is
+Apache-2.0, but check the card for whatever you actually serve.
