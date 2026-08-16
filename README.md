@@ -33,6 +33,7 @@ Five files, each answering a different question. Start wherever your question is
 |---|---|
 | `README.md` | **how to run it and what every flag does** — you are here |
 | `docs/architecture.md` | **how it actually works**, end to end: the layers, where the memory goes, what happens during a request. Read this before any structural change |
+| `docs/models.md` | serving a model other than the reference one, with a second model worked through end to end |
 | `docs/macos.md` | running it on Apple Silicon, and what is still unverified there |
 | `EXPERIMENTS.md` | the tuning lab notebook: what was measured, how, and what measured *worse* |
 | `CLAUDE.md` | working rules for coding agents in this repo |
@@ -199,6 +200,12 @@ bandwidth and have not been measured.
 Edit `MODEL_FILE` and `MODEL_ALIAS` in `.env`, adjust the sampling settings (§4), and run
 `serve.sh up`. `docker-compose.yml` stays untouched.
 
+Run `python3 scripts/gguf-info.py` against the new file first, though: three of the
+defaults here are model-dependent in ways that are not guessable from the model's name —
+whether `draft-mtp` is even available, what the KV cache will cost per token, and
+therefore what `CTX` can be. **`docs/models.md`** is the checklist, and works a second
+model (Ornith 1.0 35B, a hybrid MoE) all the way through as a contrast.
+
 ---
 
 ## 4. The flags, one by one
@@ -278,7 +285,9 @@ This is the easiest mistake to make when copying a config from one model to anot
 | `--min-p` | 0.0 | 0.0 |
 
 Every model card carries its own. Copying them across models breaks nothing visibly — it
-just generates worse output, quietly.
+just generates worse output, quietly. Nor can they be read off the `.gguf`: the
+`general.sampling.*` keys embedded in both of these files say `temp 1.0, top_k 20`, which
+matches neither column exactly. `docs/models.md` §2.
 
 ### `--reasoning-format deepseek` and the empty `content`
 

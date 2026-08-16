@@ -41,6 +41,7 @@ scripts/serve-metal.sh     the macOS/Metal equivalent of serve.sh — no Docker 
 README.md                  full documentation
 EXPERIMENTS.md             the tuning lab notebook: what was measured and why
 docs/architecture.md       how it works end to end; read before structural changes
+docs/models.md             serving another model; the checklist and a worked second example
 docs/macos.md              porting guide for Apple Silicon, with its open questions
 ```
 
@@ -88,6 +89,11 @@ cd ~/llm-server
 **Changing the model** means editing `MODEL_FILE` and `MODEL_ALIAS` in `.env`, checking the
 sampling values against the new model's card (they are model-specific — see README §4), and
 running `serve.sh up`. It should never mean editing `docker-compose.yml`.
+
+Run `scripts/gguf-info.py` against the new `.gguf` before touching anything else.
+`SPEC_TYPE=draft-mtp` only works on models that ship MTP heads and most do not, and KV cost
+per token does not track model size — between the two models documented in
+`docs/models.md` it varies by 3.4x, in the opposite direction to their file sizes.
 
 **Adding a flag** to `llama-server` goes in the `command:` block of `docker-compose.yml`,
 and gets a line in README §4 explaining it. If the value should be tunable per machine, add
