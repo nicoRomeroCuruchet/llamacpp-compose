@@ -1,0 +1,13 @@
+# Models NEVER go into the repo: they are tens of GB and are fetched with
+# scripts/download-model.sh. Git is the wrong tool for this.
+*.gguf
+models/
+
+# Per-machine configuration, not the repo's. The versioned reference is
+# .env.example.
+.env
+
+*.log
+
+# Backups left by in-place doc edits. Not history; git is.
+*.pre-experiments

@@ -1,0 +1,64 @@
+# llama.cpp server on GPU. Everything configurable lives in .env (copy it from
+# .env.example). Changing models does not require editing this file.
+services:
+  llama:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: ${CONTAINER_NAME:-llama}
+
+    # Deliberately "no": the model holds nearly all of the VRAM, and starting it
+    # on every reboot would keep the card busy even on days it is needed for
+    # training. Bring it up by hand with scripts/serve.sh up.
+    restart: "no"
+
+    # Bind address is configurable through BIND (.env). Loopback by default;
+    # setting the tailscale IP exposes it to the tailnet without opening it to
+    # the internet. See the README.
+    ports:
+      - "${BIND:-127.0.0.1}:${PORT:-8080}:8080"
+
+    # :ro — the server only ever reads the .gguf files. This keeps a bug or a
+    # mistyped command inside the container from touching models that took hours
+    # to download.
+    volumes:
+      - ${MODELS_DIR:?MODELS_DIR is missing from .env}:/models:ro
+
+    # The compose equivalent of `docker run --gpus all`. Requires
+    # nvidia-container-toolkit on the host.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    # The image ENTRYPOINT is already /app/llama-server, so everything below is
+    # a llama-server flag rather than a Docker one. Explained one by one in the
+    # README.
+    command: >
+      -m /models/${MODEL_FILE:?MODEL_FILE is missing from .env}
+      --alias ${MODEL_ALIAS:-local-model}
+      --host 0.0.0.0 --port 8080
+      -c ${CTX:-65536}
+      -ngl ${NGL:-all}
+      -np 1 -b ${BATCH:-2048} -ub ${UBATCH:-512}
+      -ctk ${KV_TYPE_K:-${KV_TYPE:-q8_0}} -ctv ${KV_TYPE_V:-${KV_TYPE:-q8_0}}
+      -fa on
+      --temp ${TEMP:-0.6} --top-p ${TOP_P:-0.95}
+      --top-k ${TOP_K:-20} --min-p ${MIN_P:-0.0}
+      --jinja
+      --reasoning-format ${REASONING_FORMAT:-deepseek}
+      --metrics
+      --cache-ram ${CACHE_RAM:-8192}
+      --spec-type ${SPEC_TYPE:-draft-mtp}
+      --spec-draft-n-max ${SPEC_N_MAX:-8}
+      --spec-draft-p-min ${SPEC_P_MIN:-0.7}
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      # Generous on purpose: loading 18 GB from disk into VRAM takes a while the
+      # first time around.
+      start_period: 300s
+      retries: 5
