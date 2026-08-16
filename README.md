@@ -112,6 +112,65 @@ $EDITOR .env                                     # check MODELS_DIR and MODEL_FI
 disk into VRAM takes a while) and then prints how much VRAM ended up in use. If the
 container dies during loading it stops waiting and shows you the logs instead of hanging.
 
+### On macOS: Apple Silicon and Metal
+
+The block above is for Linux with an NVIDIA GPU. **On a Mac none of it applies**, and the
+reason is worth knowing before trying it anyway: Docker Desktop on macOS runs containers
+inside a Linux VM, and that VM has no access to the Apple GPU — there is no Metal
+passthrough. A containerised llama.cpp inside it falls back to the CPU, runs roughly an
+order of magnitude slower, and **prints nothing to say so**. It looks like it worked.
+
+So on Apple Silicon there is no Docker at all. `llama-server` runs natively against Metal,
+driven by `scripts/serve-metal.sh`:
+
+```bash
+brew install llama.cpp
+llama-server --list-devices          # a Metal device must appear in this list
+
+git clone https://github.com/nicoRomeroCuruchet/llamacpp-compose.git
+cd llamacpp-compose
+cp .env.example .env
+$EDITOR .env                         # MODELS_DIR at minimum
+
+./scripts/download-model.sh unsloth/Qwen3.8-27B-GGUF Qwen3.8-27B-UD-Q4_K_XL.gguf
+./scripts/serve-metal.sh preflight   # check the assumptions before an 18 GB load
+./scripts/serve-metal.sh up
+./scripts/serve-metal.sh test
+```
+
+`serve-metal.sh` reads the **same `.env`** and takes the same subcommands as `serve.sh`,
+so §4 to §8 below apply as written — substitute `serve-metal.sh` for `serve.sh`. Only the
+backend and the process management differ. Two subcommands are its own:
+
+| | |
+|---|---|
+| `preflight` | Verifies before committing to a long model load: that a Metal device is really present, that the binary resolves, that the `.gguf` header is genuine, and which of `--spec-type`, `--cache-ram`, `--reasoning-format`, `--jinja`, `--metrics` and `-fa` your build has. A missing `--spec-type` is skipped rather than fatal. |
+| `mem` | The macOS answer to `serve.sh vram`. Reports installed RAM, the `iogpu.wired_limit_mb` cap and this model's KV cost per token, via `scripts/gguf-info.py`. |
+
+Three things differ in kind rather than in degree:
+
+**Memory is unified and shared.** There is no separate VRAM budget: weights and KV cache
+come out of the same pool as the OS and everything else running. macOS caps what the GPU
+may hold at roughly 70% of installed RAM — raise it with
+`sudo sysctl iogpu.wired_limit_mb=NNNNN`, which does not survive a reboot. On a 36 GB
+machine, 17.9 GB of weights plus 2.3 GB of KV at `CTX=65536` fits in the ~25 GB available
+and leaves ~15 GB for the system.
+
+**Decode is bandwidth-bound, and the bandwidth is much lower.** Each token reads the whole
+model, so throughput tracks memory bandwidth almost directly: 936 GB/s on the reference
+RTX 3090 against ~150 GB/s on an M3 Pro. Expect single digits to low teens of tokens per
+second before speculative decoding, rather than the 40–60 in §4.
+
+**`CACHE_RAM` competes with the weights.** On Linux the host-RAM prompt cache is a budget
+separate from VRAM. Here it is the same pool, so the `10240` in `.env.example` is 10 GB
+taken from what is left after the model loads. Start lower.
+
+The full guide is **`docs/macos.md`**. Be aware of what it is: a port written without a
+Mac to test on. The plumbing is complete; the calibration is not, and §5 of that file
+lists precisely what is unverified — the wired-memory fraction, whether quantized KV works
+under Metal, and the throughput figures above, which are extrapolated from memory
+bandwidth and have not been measured.
+
 ### Operation
 
 ```bash
@@ -384,6 +443,21 @@ should be turned off — otherwise there are two paths to the same port, and `se
 ```bash
 ./scripts/serve.sh logs 100
 docker run --rm ghcr.io/ggml-org/llama.cpp:server-cuda --help    # this build's flags
+```
+
+### On macOS
+
+| Symptom | Usual cause |
+|---|---|
+| Runs, answers correctly, but is ~10x slower than expected | the commonest one, and it never announces itself: either you ran it in Docker (the Linux VM has no GPU) or the build is CPU-only. `llama-server --list-devices` must show Metal. `serve-metal.sh preflight` checks both |
+| `ggml_metal_init` fails, or an allocation error on load | the model does not fit under the wired-memory cap. `serve-metal.sh mem`, then lower `CTX` or raise `iogpu.wired_limit_mb` |
+| The whole machine starts swapping | unified memory: weights plus KV plus `CACHE_RAM` left nothing for the OS. Lower `CACHE_RAM` first — on Linux it is a separate budget, here it is not |
+| `unknown flag` on startup | an older llama.cpp than these flags need. `serve-metal.sh preflight` lists which ones your build has; `brew upgrade llama.cpp` or build from source |
+| `llama-server: command not found` | not on `PATH`; set `LLAMA_BIN` in `.env` to the full path |
+
+```bash
+./scripts/serve-metal.sh preflight     # run this first, it checks all of the above
+./scripts/serve-metal.sh logs 100
 ```
 
 ---
