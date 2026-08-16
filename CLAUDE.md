@@ -42,6 +42,7 @@ README.md                  full documentation
 EXPERIMENTS.md             the tuning lab notebook: what was measured and why
 docs/architecture.md       how it works end to end; read before structural changes
 docs/models.md             serving another model; the checklist and a worked second example
+docs/profiles/*.env        complete known-good configs; the durable copy of a tuned .env
 docs/macos.md              porting guide for Apple Silicon, with its open questions
 ```
 
@@ -60,7 +61,9 @@ The mount is `:ro` specifically so that nothing inside the container can touch t
 
 **`.env` is not versioned and holds the live configuration.** Change it in place when the
 task calls for it, but mirror any *new* variable into `.env.example` with a comment, or the
-next person cannot reproduce the setup.
+next person cannot reproduce the setup. When a configuration has been tuned and measured,
+also write it to `docs/profiles/<alias>.env` — otherwise it exists on one machine only and
+dies with it.
 
 **Do not install system packages to solve a problem a container or a script can solve.**
 This rule exists because the reference host is shared with other users; it is why

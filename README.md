@@ -34,6 +34,7 @@ Five files, each answering a different question. Start wherever your question is
 | `README.md` | **how to run it and what every flag does** — you are here |
 | `docs/architecture.md` | **how it actually works**, end to end: the layers, where the memory goes, what happens during a request. Read this before any structural change |
 | `docs/models.md` | serving a model other than the reference one, with a second model worked through end to end |
+| `docs/profiles/` | complete known-good `.env` files, one per model — copy one over `.env` and start |
 | `docs/macos.md` | running it on Apple Silicon, and what is still unverified there |
 | `EXPERIMENTS.md` | the tuning lab notebook: what was measured, how, and what measured *worse* |
 | `CLAUDE.md` | working rules for coding agents in this repo |
