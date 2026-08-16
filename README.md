@@ -87,6 +87,12 @@ server is misconfigured but is only the wrong method. Use `/` for a browser.
 - `docker compose` v2 or newer.
 - **No CUDA toolkit or `nvcc` needed on the host.** It all ships inside the image.
 
+**On macOS this whole section does not apply.** Docker Desktop runs its containers in a
+Linux VM with no access to the Apple GPU, so a containerised llama.cpp falls back to the
+CPU without saying so. Apple Silicon runs `llama-server` natively against Metal instead:
+see **`docs/macos.md`** and `scripts/serve-metal.sh`, which read the same `.env` and take
+the same subcommands as everything below.
+
 ---
 
 ## 3. Getting started

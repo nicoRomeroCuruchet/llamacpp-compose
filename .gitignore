@@ -9,5 +9,9 @@ models/
 
 *.log
 
+# Runtime files from scripts/serve-metal.sh, which manages a process
+# rather than a container.
+*.pid
+
 # Backups left by in-place doc edits. Not history; git is.
 *.pre-experiments

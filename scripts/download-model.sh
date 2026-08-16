@@ -14,6 +14,19 @@ cd "$(dirname "$0")/.."
 # shellcheck disable=SC1091
 set -a; . ./.env; set +a
 
+# GNU coreutils spells this `stat -c %s`, BSD/macOS `stat -f %z`. They cannot be
+# chained with `||`: to GNU stat, -f means "filesystem status", so `stat -f %z`
+# SUCCEEDS and prints a filesystem dump to stdout rather than failing over to
+# the second form. Validate that the answer is a number instead of trusting the
+# exit status.
+filesize() {
+    n=$(stat -f %z "$1" 2>/dev/null)
+    case "$n" in
+        ''|*[!0-9]*) stat -c %s "$1" ;;
+        *)           printf '%s\n' "$n" ;;
+    esac
+}
+
 REPO="${1:?usage: $0 <repo> <file.gguf>}"
 FILE="${2:?usage: $0 <repo> <file.gguf>}"
 URL="https://huggingface.co/${REPO}/resolve/main/${FILE}"
@@ -30,7 +43,7 @@ EXPECTED=$(curl -sIL "$URL" | grep -i '^x-linked-size:' | tail -1 | tr -dc '0-9'
 [ -z "$EXPECTED" ] && { echo "ERROR: could not determine the remote size" >&2; exit 1; }
 printf "remote: %s bytes (%.1f GB)\n" "$EXPECTED" "$(awk "BEGIN{print $EXPECTED/1e9}")"
 
-if [ -f "$DEST" ] && [ "$(stat -c %s "$DEST")" = "$EXPECTED" ]; then
+if [ -f "$DEST" ] && [ "$(filesize "$DEST")" = "$EXPECTED" ]; then
     echo "already complete, nothing to do: $DEST"
     exit 0
 fi
@@ -41,7 +54,7 @@ curl -L -C - --progress-bar -o "$DEST" "$URL"
 # Verification. The file existing is not enough: an interrupted download leaves
 # a perfectly valid half-file behind, and an HTTP error response can end up
 # saved under the model's name.
-ACTUAL=$(stat -c %s "$DEST")
+ACTUAL=$(filesize "$DEST")
 if [ "$ACTUAL" != "$EXPECTED" ]; then
     echo "ERROR: size $ACTUAL != expected $EXPECTED. Re-run to resume." >&2
     exit 1

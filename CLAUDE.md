@@ -22,8 +22,10 @@ docker-compose.yml         the service; all values come from .env
 scripts/serve.sh           up | down | status | logs | test | vram
 scripts/download-model.sh  fetch a .gguf from HuggingFace and verify it
 scripts/gguf-info.py       read a .gguf header: architecture and KV cache arithmetic
+scripts/serve-metal.sh     the macOS/Metal equivalent of serve.sh — no Docker involved
 README.md                  full documentation
 EXPERIMENTS.md             the tuning lab notebook: what was measured and why
+docs/macos.md              porting guide for Apple Silicon, with its open questions
 ```
 
 Models live in `~/models/` on the host, **outside the repo**, and are mounted read-only at
