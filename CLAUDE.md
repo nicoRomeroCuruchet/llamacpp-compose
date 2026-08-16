@@ -62,9 +62,12 @@ The mount is `:ro` specifically so that nothing inside the container can touch t
 task calls for it, but mirror any *new* variable into `.env.example` with a comment, or the
 next person cannot reproduce the setup.
 
-**This is a shared machine.** Do not install system packages to solve a problem that a
-container or a script can solve. That is why `download-model.sh` uses `curl` rather than
-`huggingface_hub`.
+**Do not install system packages to solve a problem a container or a script can solve.**
+This rule exists because the reference host is shared with other users; it is why
+`download-model.sh` uses `curl` rather than `huggingface_hub`. It is **not** a reason to
+refuse the installs a platform genuinely requires: on macOS, `brew install llama.cpp` is
+the supported path and there is no container alternative. Ask the user before installing
+anything on a machine you have reason to think is shared.
 
 **Do not enable `restart: always`.** The model holds ~19 GB of the 24 GB card. Auto-starting
 would take the GPU on days it is needed for training. Bringing it up is a manual act.
@@ -73,7 +76,26 @@ would take the GPU on days it is needed for training. Bringing it up is a manual
 carry the same `llama-server` invocation. Changing one and not the other makes the two
 platforms diverge with nothing to signal it.
 
+## Setting it up for the first time
+
+Establish the platform first — the two runtimes need different instructions, and the wrong
+one fails quietly rather than loudly.
+
+| | |
+|---|---|
+| **Linux + NVIDIA GPU** | README §3. Needs Docker and `nvidia-container-toolkit`. |
+| **macOS + Apple Silicon** | README §3 → "On macOS", and `docs/macos.md`. Native `llama-server` via Homebrew, **no Docker**. Run `./scripts/serve-metal.sh preflight` before anything else: it checks that a Metal device is really present, that the build has the flags this repo uses, and that the model downloaded whole. All three fail silently otherwise. |
+| **macOS + Intel, or Linux without an NVIDIA GPU** | there is no GPU path. Say so rather than proceeding; CPU inference on a 27B model is not usable. |
+
+`docs/macos.md` §5 lists what is known to be unverified on Apple Silicon — the
+wired-memory fraction, whether quantized KV works under Metal, and the throughput
+estimates. Treat those as open questions to measure, not as documented facts, and tell the
+user what you measured.
+
 ## Common tasks
+
+On Linux. The macOS equivalents are the same subcommands on `scripts/serve-metal.sh`,
+except `vram`, which is `mem` there.
 
 ```bash
 cd ~/llm-server
