@@ -25,6 +25,18 @@ below depend on the model's architecture rather than on llama.cpp. `EXPERIMENTS.
 records how each measurement was taken so you can rerun it on your own hardware;
 `scripts/gguf-info.py` recomputes the memory arithmetic for any `.gguf`.
 
+### The documentation
+
+Five files, each answering a different question. Start wherever your question is:
+
+| | |
+|---|---|
+| `README.md` | **how to run it and what every flag does** — you are here |
+| `docs/architecture.md` | **how it actually works**, end to end: the layers, where the memory goes, what happens during a request. Read this before any structural change |
+| `docs/macos.md` | running it on Apple Silicon, and what is still unverified there |
+| `EXPERIMENTS.md` | the tuning lab notebook: what was measured, how, and what measured *worse* |
+| `CLAUDE.md` | working rules for coding agents in this repo |
+
 ---
 
 ## 1. What the image is

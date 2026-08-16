@@ -9,9 +9,24 @@ GGUF model over an OpenAI-compatible HTTP API. It is model- and GPU-agnostic; th
 the documentation measures against is an RTX 3090 (24 GB) serving **Qwen3.8-27B**
 (`UD-Q4_K_XL`, 17.9 GB).
 
-There is no application code here. The repo is four things: a compose file, an `.env` that
-parameterizes it, two operational shell scripts, and the documentation. Read `README.md`
-before changing anything — it explains every flag and the reasoning behind the defaults.
+There is no application code here. The repo is a compose file, an `.env` that
+parameterizes it, a few operational shell scripts, and the documentation.
+
+**There are two runtimes, and the wrong one gives advice that silently does nothing.**
+Establish which you are on before suggesting any command:
+
+| | Linux + NVIDIA | macOS + Apple Silicon |
+|---|---|---|
+| how it runs | `docker compose`, CUDA image | native `llama-server`, Metal, **no Docker** |
+| driven by | `scripts/serve.sh` | `scripts/serve-metal.sh` |
+| memory | dedicated VRAM | unified, shared with the OS |
+
+Docker on macOS is not a slower option, it is a broken one: the Linux VM cannot reach the
+Apple GPU, so a containerised llama.cpp falls back to the CPU and reports nothing.
+
+Read `README.md` before changing anything — it explains every flag and the reasoning
+behind the defaults. `docs/architecture.md` explains how the pieces fit together and is
+the right thing to read before any structural change.
 
 ## Layout
 
@@ -25,6 +40,7 @@ scripts/gguf-info.py       read a .gguf header: architecture and KV cache arithm
 scripts/serve-metal.sh     the macOS/Metal equivalent of serve.sh — no Docker involved
 README.md                  full documentation
 EXPERIMENTS.md             the tuning lab notebook: what was measured and why
+docs/architecture.md       how it works end to end; read before structural changes
 docs/macos.md              porting guide for Apple Silicon, with its open questions
 ```
 
@@ -51,6 +67,10 @@ container or a script can solve. That is why `download-model.sh` uses `curl` rat
 
 **Do not enable `restart: always`.** The model holds ~19 GB of the 24 GB card. Auto-starting
 would take the GPU on days it is needed for training. Bringing it up is a manual act.
+
+**A flag change goes in both runtimes.** `docker-compose.yml` and `scripts/serve-metal.sh`
+carry the same `llama-server` invocation. Changing one and not the other makes the two
+platforms diverge with nothing to signal it.
 
 ## Common tasks
 
@@ -100,6 +120,12 @@ output goes to `reasoning_content` first. README §4 covers this.
 - **Container startup is slow by design.** `start_period: 300s` in the healthcheck exists
   because loading 18 GB into VRAM takes a while. Do not shorten it to make things "feel"
   faster.
+- **On macOS, "it works but it is slow" usually means it never got the GPU.** Either it
+  was run under Docker, or the build is CPU-only. Neither says so. `llama-server
+  --list-devices` must list Metal; `serve-metal.sh preflight` checks it.
+- **`--cache-ram` is host RAM on Linux and unified memory on macOS.** The same value is
+  free of VRAM cost on one and competes with the weights on the other. Do not copy it
+  across platforms.
 - **VRAM is the binding constraint, not disk or RAM.** Before raising `CTX`, run
   `serve.sh vram` and check the headroom against README §5 and `EXPERIMENTS.md` §7. Note
   that the reference model is hybrid — only 17 of 65 blocks carry KV — so the usual
