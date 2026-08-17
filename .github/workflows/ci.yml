@@ -1,0 +1,95 @@
+# Deliberately does not start the server.
+#
+# That needs an NVIDIA GPU, the container toolkit and an 18 GB model file, none
+# of which exist on a runner. What is checked is everything that can be: the
+# scripts, the compose file, the GGUF tool, and the invariants the documentation
+# claims.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  scripts:
+    name: Scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Shell syntax
+        run: |
+          for f in scripts/*.sh; do
+            printf '%-32s' "$f"
+            bash -n "$f" && echo ok
+          done
+
+      - name: ShellCheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          # Errors fail the build; style and info do not.
+          shellcheck --severity=error --shell=bash scripts/*.sh
+
+      - name: gguf-info.py compiles and runs
+        run: |
+          python3 -m py_compile scripts/gguf-info.py
+          # It must refuse a non-GGUF file rather than crash with a traceback.
+          echo "not a model" > /tmp/fake.bin
+          if python3 scripts/gguf-info.py /tmp/fake.bin 2>&1 | grep -q "not a GGUF file"; then
+            echo "rejects a non-GGUF file cleanly"
+          else
+            echo "expected a clean rejection"; exit 1
+          fi
+
+  compose:
+    name: Compose
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: docker-compose.yml is valid against .env.example
+        run: |
+          cp .env.example .env
+          docker compose config >/dev/null
+          echo "valid"
+
+      - name: Every variable used has a default or is documented
+        run: |
+          # Any ${VAR} in the compose file must appear in .env.example, or
+          # nobody can reproduce the setup from the repo alone.
+          missing=0
+          for v in $(grep -oE '\$\{[A-Z_]+' docker-compose.yml | tr -d '${' | sort -u); do
+            if ! grep -qE "^#?\s*${v}=" .env.example; then
+              echo "missing from .env.example: $v"; missing=1
+            fi
+          done
+          [ "$missing" = 0 ] && echo "all documented"
+          exit "$missing"
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No hostnames or addresses leaked
+        run: |
+          # .env holds the real values and is gitignored. Nothing versioned
+          # should carry a real tailnet name or a 100.x address.
+          if git ls-files -z | xargs -0 grep -nE 'tail[0-9a-z]+\.ts\.net|100\.([6-9][0-9]|1[0-2][0-7])\.[0-9]+\.[0-9]+'; then
+            echo "a real hostname or address is committed"; exit 1
+          fi
+          echo "clean"
+
+      - name: Profiles are complete .env files
+        run: |
+          for p in docs/profiles/*.env; do
+            printf '%-34s' "$p"
+            for k in MODEL_FILE MODEL_ALIAS CTX KV_TYPE SPEC_TYPE; do
+              grep -qE "^${k}=" "$p" || { echo "missing $k"; exit 1; }
+            done
+            echo ok
+          done

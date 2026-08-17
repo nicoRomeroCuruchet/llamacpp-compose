@@ -15,3 +15,8 @@ models/
 
 # Backups left by in-place doc edits. Not history; git is.
 *.pre-experiments
+
+# Byte-compiled Python. scripts/gguf-info.py is stdlib-only and needs no
+# build step; these appear when the CI checks are run locally.
+__pycache__/
+*.pyc

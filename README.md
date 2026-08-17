@@ -1,5 +1,13 @@
 # llamacpp-compose
 
+[![CI](https://img.shields.io/github/actions/workflow/status/nicoRomeroCuruchet/llamacpp-compose/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/nicoRomeroCuruchet/llamacpp-compose/actions)
+![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
+![llama.cpp](https://img.shields.io/badge/llama.cpp-server--cuda-lightgrey?style=flat-square)
+![CUDA](https://img.shields.io/badge/CUDA-NVIDIA-76B900?style=flat-square&logo=nvidia&logoColor=white)
+![Metal](https://img.shields.io/badge/Apple_Silicon-Metal-000000?style=flat-square&logo=apple&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-compose-2496ED?style=flat-square&logo=docker&logoColor=white)
+![Python](https://img.shields.io/badge/Python-stdlib_only-3776AB?style=flat-square&logo=python&logoColor=white)
+
 A local LLM server running **llama.cpp on the GPU**, packaged in Docker and driven with
 `docker compose`. It exposes an **OpenAI-compatible** API, so any client that accepts a
 `base_url` can talk to it unmodified.
