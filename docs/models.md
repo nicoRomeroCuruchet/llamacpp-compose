@@ -179,14 +179,17 @@ The container currently running on the 4090 predates this repo and was configure
 --reasoning-format deepseek --metrics --spec-type ngram-simple --alias ornith-35b
 ```
 
-Two differences from what this repo would give it, both worth picking up if it is ever
-recreated:
+Two differences from what this repo would give it, discussed below rather than applied,
+because it is a shared machine and the container has been serving for days:
 
-- **`-b 512 -ub 256` throttles prefill.** These are the values this repo moved away from;
-  see `EXPERIMENTS.md` §2. Its measured 3,962 t/s is with the handbrake on.
+- **`-b 512 -ub 256`.** On the 3090 these throttled prefill (988 t/s) and were raised to
+  `2048/512` (`EXPERIMENTS.md` §2). On the 4090 that does not hold: the A/B in
+  `EXPERIMENTS.md` §10 measured this exact pair prefilling at **4,136–5,538 t/s**, and
+  `-b 256` was no faster. No change is warranted here.
 - **No `--cache-ram`**, so there is no prompt cache at all. In an agent loop that is the
   difference between a warm turn and reprocessing the whole conversation —
   `EXPERIMENTS.md` §3 measured that at 35 seconds to first token on a 48k context.
 
-Neither was changed while writing this: it is a shared machine and the container has been
-serving for two days.
+The A/B in `EXPERIMENTS.md` §10 confirms this hand-built config is already the optimal one
+for throughput: the only knob worth touching is `KV_TYPE=q4_0` for ~0.65 GB of VRAM
+headroom at a 1–2% decode cost.

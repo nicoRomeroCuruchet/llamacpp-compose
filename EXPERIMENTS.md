@@ -336,3 +336,89 @@ Stated so nobody mistakes silence for a result:
 | `CACHE_RAM` | 8192 | 10240 | exp. 3 — evictions cost 35 s to first token |
 | `CTX` | 65536 | 65536 | exp. 7 — headroom exists, need does not |
 | `KV_TYPE` | `q8_0` | `q8_0` | exp. 7 — `f16` fits but buys less than context would |
+
+---
+
+## 10. Ornith 1.0 35B on the RTX 4090: is the "optimized" config faster?
+
+**Question.** `docs/profiles/ornith-35b.env` carries two values over from the 3090 work
+without having measured them on the card that serves Ornith, and it flags an open one
+("setting `SPEC_TYPE=none` and measuring the difference is worth doing; it may well be
+faster"). This experiment answers all three on a 4090: does an "optimized" config beat the
+deployment that is actually serving the model?
+
+**Fixed conditions.** Two nodes with identical hardware, the same model file, the same
+image — the only differences are the four config values under test:
+
+| | Arm A (baseline, live) | Arm B (optimized) |
+|---|---|---|
+| Node | `a1554-ubu` | `a1553-ubu` |
+| GPU | RTX 4090, 24,564 MiB | RTX 4090, 24,564 MiB |
+| Image | `ghcr.io/ggml-org/llama.cpp:server-cuda` | same |
+| Model | `Ornith-1.0-35B-UD-Q4_K_XL.gguf`, 22.3 GB | same file, MD5 `02c7a761…` verified identical |
+| `-b` / `-ub` | 512 / 256 | 256 / 256 |
+| KV (`-ctk` / `-ctv`) | `q8_0` | `q4_0` |
+| `--spec-type` | `ngram-simple` | `none` |
+| shared | `-c 131072 -ngl all -np 1 -fa on --temp 1.0 --top-p 0.95 --top-k 0 --min-p 0.0 --reasoning-format deepseek`, no `--cache-ram` | same |
+
+Neither container exposes the four values on their own, so this A/B varies them **together** —
+it answers "is B worth running", not "which knob was responsible". The shared values are
+the ones from `docs/models.md` §6.
+
+**Method.** Same prompt on both arms, one request per run, timings read from the API's
+`timings` field (`prompt_per_second` / `predicted_per_second`). Because llama.cpp's prompt
+cache turns a cache-miss into a near-instant `prompt_n=4` prefill, every prefill run used a
+unique leading marker in the user content to force a clean, honest cache-miss measure
+(`prompt_n` verified non-trivial). Workloads, in ascending order of representativeness:
+
+- **1.2k short** coding prompt, 5 rounds each arm — reported for decode only; at 37 t/s in
+  §0 the prefill number on a short prompt is meaningless.
+- **16k synthetic** context, generated random text (not repeated), one run each arm.
+- **128k synthetic** context, random text — with a caveat: the generator repeats ~20 words,
+  which is pathological for the n-gram drafter and inflates Arm A's decode advantage. Read
+  the 35.6k real number as the representative one.
+- **35.6k real** the actual `llamacpp-compose` repo tree plus the analysis request that
+  prompted all this, 3 rounds each arm.
+
+Prefill after the first request hits the warm prompt cache only if the prompt is identical;
+unique markers avoided that. Decode numbers came from short prompts (no cache interaction).
+
+**Results.** Mean prefill / decode tokens per second, one client:
+
+| Workload | Arm A (baseline) | Arm B (optimized) |
+|---|---|---|
+| 1.2k short — decode | 146 | 145 |
+| 16k synthetic | 5,538 / 137 | 5,513 / 135 |
+| 128k synthetic | 4,136 / 99 | 4,133 / 94 |
+| **35.6k real** | **4,525 / 127** | **4,481 / 125** |
+
+VRAM after the model settled (`nvidia-smi`, MiB of 24,564): **Arm A 23,117** (1,447 free),
+**Arm B 22,463** (2,101 free) — a **~0.65 GB** saving from `q4_0` KV.
+
+**What the three levers actually did:**
+
+- **`--spec-type none` did not speed decode.** This answers the open question in
+  `docs/profiles/ornith-35b.env` in the negative: removing the n-gram drafter was not
+  faster in any workload; Arm A's baseline (with `ngram-simple`) was equal or, at longer
+  context, up to ~5% ahead in decode. The profile's "it may well be faster" reads the wrong
+  way — keep `ngram-simple`. Consistent with §3's measure of 1.07 tokens per forward pass.
+- **KV `q8_0` → `q4_0` is throughput-neutral.** Prefill and decode were the same within
+  noise on both arms. The cache is small (1,360 MiB at this context) and decode is dominated
+  by weight reads, not KV reads. `q4_0` buys **+0.65 GB of VRAM headroom**, nothing in speed.
+  It is the only lever that helps the "under 1.5 GB free" margin `docs/profiles/ornith-35b.env`
+  calls out — at a cost of ~1–2% decode.
+- **`-b 256` equal to `-b 512`.** The 4090 honestly prefills at 4,136–5,538 t/s even at
+  `-b 512 -ub 256`. That directly contradicts the "512/256 throttles prefill" claim applied
+  to this model in `docs/models.md` §6 — that was a 3090 observation (988 t/s) and does not
+  hold on a 4090.
+
+**Result. Arm A (the running deployment) is the optimal throughput config, and the
+"optimized" Arm B adds nothing but VRAM headroom.** Prefill was identical within noise, and
+Arm A held a small decode edge in every test. There is no reason to switch. The only change
+ever worth considering is KV `q4_0` for +0.65 GB headroom at a 1–2% decode cost, which the
+restraint about shared 24 GB cards may or may not justify.
+
+**Not measured (stated so it is not mistaken for a result):** `-b 2048 -ub 512` (the 3090's
+chosen values) was not run on the 4090 — the A/B is baseline-512/256 vs 256/256 only, so it
+does not re-test the 3090 improvement. `--cache-ram` was absent on both arms; its case
+stands on the 3090 latency result (§3), not here. No concurrency (`-np 1` throughout).

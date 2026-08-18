@@ -11,7 +11,7 @@ $EDITOR .env                      # MODELS_DIR is the one machine-specific line
 | File | Model | Status |
 |---|---|---|
 | `qwen38-27b.env` | Qwen3.8-27B `UD-Q4_K_XL`, 17.9 GB | **in production** on an RTX 3090; every value measured |
-| `ornith-35b.env` | Ornith 1.0 35B `UD-Q4_K_XL`, 22.3 GB | reconstructed from a working RTX 4090 deployment, with two corrections applied; not run in this exact form |
+| `ornith-35b.env` | Ornith 1.0 35B `UD-Q4_K_XL`, 22.3 GB | **in production** on a 4090; the exact serving config, A/B-verified optimal — `EXPERIMENTS.md` §10 |
 
 ## Why these exist
 
