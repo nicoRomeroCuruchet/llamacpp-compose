@@ -8,11 +8,18 @@ argued *against* a change.
 Every number here was measured on the machine described below. None of it is quoted from a
 model card or a benchmark elsewhere.
 
+**Three models and two cards share this notebook.** Experiments 1-9 are Qwen3.8-27B, a
+dense model, on an RTX 3090. Experiment 10 is Ornith 1.0 35B on an RTX 4090 - and finds
+that a 3090 conclusion about batch size does not hold there. Experiment 11 is Ornith 1.5
+35B-A3B, a mixture of experts, back on the 3090 - and reverses three more. Read 10 and 11
+before carrying any tuning decision from here to a new model or a new card.
+
 ---
 
 ## 0. Fixed conditions
 
-Unless an experiment says otherwise, all of it ran under:
+Unless an experiment says otherwise, all of it ran under these conditions. **Experiments 10
+and 11 do say otherwise** and declare their own.
 
 | | |
 |---|---|
@@ -338,7 +345,6 @@ Stated so nobody mistakes silence for a result:
 | `KV_TYPE` | `q8_0` | `q8_0` | exp. 7 — `f16` fits but buys less than context would |
 
 ---
-
 ## 10. Ornith 1.0 35B on the RTX 4090: is the "optimized" config faster?
 
 **Question.** `docs/profiles/ornith-35b.env` carries two values over from the 3090 work
@@ -422,3 +428,184 @@ restraint about shared 24 GB cards may or may not justify.
 chosen values) was not run on the 4090 — the A/B is baseline-512/256 vs 256/256 only, so it
 does not re-test the 3090 improvement. `--cache-ram` was absent on both arms; its case
 stands on the 3090 latency result (§3), not here. No concurrency (`-np 1` throughout).
+
+---
+
+## 11. A third model, and a second card generation: Ornith 1.5 35B-A3B
+
+Experiments 1–9 are Qwen3.8-27B and experiment 10 is Ornith 1.0 on a 4090. This one is
+Ornith 1.5 35B-A3B, back on the 3090, run on 2026-08-20, and it is worth reading precisely
+because **it reverses three of the conclusions above**. None of the three announces itself; each looks like the earlier
+result still holds until it is measured.
+
+### Fixed conditions
+
+| | |
+|---|---|
+| Host | `udesa` — RTX 3090, 24,576 MiB VRAM, 27 GiB system RAM |
+| Image | `ghcr.io/ggml-org/llama.cpp:server-cuda`, pulled 2026-08-14 |
+| Model | `Ornith-1.5-35B-Q4_K_M.gguf`, 21,713,462,848 B (20.2 GiB), `ornith-ai/Ornith-1.5-35B-A3B-GGUF` |
+| Architecture | `qwen35moe` — MoE, 256 experts, 8 active (~3B active params), 41 blocks, 11 with KV, `head_count_kv 2` |
+| Server | `-ngl all`, `-np 1`, `-fa on`, `-b 2048 -ub 512` |
+| Sampling | `--temp 1.0 --top-p 0.95 --top-k 20` — read from the GGUF, see below |
+| Workload | fixed ~3.5k-token prompt, `n_predict 256`, `cache_prompt false`, best decode rate of 3 runs |
+
+Five batches, container recreated between every row, each batch ending in a control run
+that repeats its first row. **The controls came back identical** — 161.00 vs 161.00 in
+batch 1, 160.42 against a 161.00 baseline in batch 2, 162.63 vs 161.28 for `q8_0` at 262k.
+The 3090 does not thermally drift over a benchmark block the way the laptop 3070 does, so
+every difference below is an effect rather than noise.
+
+### 11.1 Two things that must be read from the file, not inferred
+
+`scripts/gguf-info.py` on the actual `.gguf`:
+
+- **Sampling is in the metadata.** `general.sampling.temp 1.0 / top_k 20 / top_p 0.95`.
+  The model card's Python examples say `temperature=0.6`, but every benchmark reported in
+  that same card was run at 1.0. The file agrees with the benchmarks. Trust the file.
+- **The MTP head survived quantization**: `blk.40.nextn.*` is present,
+  `nextn_predict_layers 1`. This is the first GGUF in this repo's history where it did —
+  the Unsloth builds of Ornith 1.0 dropped it. Which made the next experiment worth running
+  and, as it turns out, worth writing down.
+
+### 11.2 Speculative decoding — the `draft-mtp` result does not transfer
+
+**Question.** Experiment 1 measured +31% from `draft-mtp` on Qwen3.8-27B. This model ships
+the heads too. Same win?
+
+| `SPEC_TYPE` | `N_MAX` | decode | acceptance | VRAM |
+|---|---|---|---|---|
+| **`none`** | — | **160.4 t/s** | — | **21,214 MiB** |
+| `ngram-simple` | — | 158.0 t/s | 15% (37/240) | 21,214 MiB |
+| `draft-mtp` | 8 | 122.0 t/s | 87% (173/198) | 22,480 MiB |
+| `draft-mtp` | 3 | 129.5 t/s | 88% (142/162) | 22,166 MiB |
+
+**Result. `draft-mtp` costs 24% of decode here.** Not a tuning failure: acceptance is 87–88%
+in both runs, so the drafter is guessing right almost every time and still loses. Shortening
+the draft from 8 to 3 recovers part of it and stays far below doing nothing at all.
+
+**Why.** Speculation trades extra compute for fewer sequential steps, and only pays when a
+token from the target model is expensive. This is a mixture of experts with ~3B active
+parameters: a token is cheap, so the verification pass never amortizes. Qwen3.8-27B is
+dense — every one of its 27B parameters runs per token — which is exactly the regime where
+speculation wins.
+
+**The rule to carry forward: judge `draft-mtp` by ACTIVE parameters, not by file size.** A
+20 GiB MoE behaves, for this decision, like a small model. It also costs 1.3 GB of VRAM,
+which at the context chosen below is VRAM that does not exist.
+
+### 11.3 KV cache type — `f16` is faster than `q8_0`, not just more accurate
+
+`.env.example` says `q8_0` "uses half of what f16 does, at negligible loss". On this model
+the loss is negative — you pay speed for the privilege:
+
+| `CTX` | `q8_0` | `f16` | Δ |
+|---|---|---|---|
+| 65,536 | 160.4 t/s | **168.0 t/s** | +4.7% |
+| 131,072 | 161.5 t/s | **167.7 t/s** | +3.8% |
+
+**Why.** The model barely has a KV cache: 11 of 41 blocks carry one, at `head_count_kv 2`.
+Quantizing something that small saves little bandwidth, while the dequantization it adds to
+every attention operation costs real time. `q8_0` earns its keep when the cache is large —
+Qwen3.8-27B at 36.1 KiB/token — and stops earning it when the cache is small.
+
+**`f16` is nonetheless not what this profile ships**, for the reason in 11.5: it does not
+fit at the context that matters more.
+
+### 11.4 Mixed K/V types — a silent 3.6x slowdown
+
+**Question.** `docker-compose.yml` exposes `KV_TYPE_K` and `KV_TYPE_V` separately. K is the
+more quantization-sensitive of the two, so an exact K with a quantized V looks like the
+obvious way to buy back precision at half the VRAM. Does it work?
+
+| K / V | `CTX` | prefill | decode | VRAM |
+|---|---|---|---|---|
+| `q8_0` / `q8_0` | 131,072 | 3,146 t/s | 161.5 t/s | 22,086 MiB |
+| `f16` / `q8_0` | 131,072 | **241 t/s** | **44.5 t/s** | 22,322 MiB |
+| `f16` / `q8_0` | 196,608 | **259 t/s** | **45.0 t/s** | 23,302 MiB |
+
+**Result. No. Decode collapses to a quarter and prefill to a thirteenth.** The flash
+attention kernel has no path for mismatched K and V types and falls back to a generic one.
+
+**Is it the mismatch or the `f16`?** `.env.example` recommended a *different* mixed pair —
+`q8_0` for K, `q4_0` for V — so generalizing from one combination would have been exactly
+the error this notebook keeps warning about. Measured at `CTX=262144`, with both uniform
+types as controls:
+
+| K / V | prefill | decode | VRAM |
+|---|---|---|---|
+| `q8_0` / `q8_0` | 3,252 t/s | 161.4 t/s | 23,830 MiB |
+| `q4_0` / `q4_0` | 3,258 t/s | 160.4 t/s | 22,550 MiB |
+| `q8_0` / `q4_0` | **244 t/s** | **58.9 t/s** | 22,442 MiB |
+
+**It is the mismatch.** Any uniform type runs at full speed, `q4_0` included; any mismatched
+pair collapses. The quantization level is not the variable — whether K and V agree is.
+
+Two consequences. First, the suggestion `.env.example` used to carry is a performance bug,
+and has been replaced with this table. Second, `q4_0` uniform is a real option that nobody
+had noticed: same speed as `q8_0` and **1,280 MiB cheaper** at 262k. It is not recommended
+here only because its accuracy cost is unmeasured (11.7), but it is the lever to reach for
+if headroom is ever needed.
+
+**The part that matters: there is no warning.** `docker inspect` confirms the flags arrive
+as `-ctk f16 -ctv q8_0 -fa on`; the log contains nothing about a fallback; the server is
+healthy and answers correctly. Only the throughput says anything, and only if you are
+measuring. Set `KV_TYPE` and leave `KV_TYPE_K`/`KV_TYPE_V` alone unless you are prepared to
+benchmark the result.
+
+### 11.5 The `CTX` ceiling, measured rather than estimated
+
+VRAM in use at idle, `spec=none`, every cell an observation:
+
+| `CTX` | `q8_0` | `f16` |
+|---|---|---|
+| 65,536 | 21,214 MiB | 21,702 MiB |
+| 131,072 | 22,086 MiB | 23,046 MiB |
+| 196,608 | 22,958 MiB | **OOM** — `failed to allocate compute pp buffers` |
+| 262,144 | **23,830 MiB** | **OOM** — `failed to allocate buffer for kv cache` |
+
+`q8_0` is exactly linear: **872 MiB per 65,536 tokens = 13.6 KiB/token**, extrapolating back
+to ~20,342 MiB at zero context. `f16` costs 21.0 KiB/token and runs out between 131k and
+196k.
+
+**`gguf-info.py` computes 11.7 KiB/token — it undershoots by 17%**, because it models the
+cache and not the context-dependent compute buffers. On the 9B it undershot by 29%. The sign
+of the error has been the same every time; leave room for it.
+
+**Context is free in speed.** 160.4 / 161.5 / 161.6 / 162.6 t/s at 65k / 131k / 196k / 262k.
+It costs VRAM and nothing else, which makes the ceiling the only question worth asking.
+
+### 11.6 Result
+
+**`CTX=262144`, `KV_TYPE=q8_0`, `SPEC_TYPE=none`** — 23,830 MiB of 24,576, 162.6 t/s decode,
+3,271 t/s prefill, and the model's full declared context window.
+
+The one genuine trade-off in the whole exercise is this pair:
+
+| | decode | context | KV | free VRAM |
+|---|---|---|---|---|
+| `q8_0` @ 262,144 | 162.6 t/s | **262,144** | quantized | 746 MiB |
+| `f16` @ 131,072 | **167.7 t/s** | 131,072 | **exact** | 1,530 MiB |
+
+3% of decode against twice the context and a quantized cache. **262k wins on a dedicated
+card**; the `f16` row is the right answer on a shared one, where 746 MiB of headroom is an
+OOM waiting for someone else's job. Everything else — the drafter, the mixed cache — is not
+a trade-off but a mistake with a measurement attached.
+
+The full configuration is `docs/profiles/ornith15-35b.env`.
+
+### 11.7 Not measured
+
+- **Output quality.** Every claim above is about speed and VRAM. That `q8_0` KV costs
+  little accuracy is inherited belief, not something tested here, and it is the assumption
+  the 262k recommendation rests on. The same gap is why `q4_0` uniform — same speed,
+  1,280 MiB cheaper — is documented in 11.4 but not recommended.
+- **Whether the mixed-cache collapse also hits the dense reference model.** 11.4 was
+  measured on `qwen35moe` only. The `.env.example` suggestion it invalidates was written
+  for Qwen3.8-27B, and confirming it there means swapping the served model, so it was not
+  run. The warning is therefore scoped to what was observed.
+- **Concurrency.** `-np 1` throughout, as in experiments 1–9.
+- **`BATCH`/`UBATCH`.** Left at 2048/512 from the Qwen tuning. Prefill sat at ~3,270 t/s
+  and was never the bottleneck, so they were not swept.
+- **YaRN beyond 262,144.** The card claims ~1M tokens with a scaling factor of 4.0, but
+  validates it under vLLM and SGLang. Untested on llama.cpp, and there is no VRAM for it.
