@@ -46,6 +46,13 @@ breaks nothing visibly — it just generates worse output, quietly.
 > Both models in the table below ship `temp 1.0, top_k 20` in their metadata, which
 > contradicts Qwen's own card (`temp 0.6`) and Ornith's deployed configuration
 > (`top_k 0`). Trust the model card, not the file.
+>
+> **Counter-example, added after the fact.** Ornith 1.5 35B-A3B also carries
+> `temp 1.0, top_k 20` in its metadata, and there the file is the one to trust: the
+> card's Python examples say `0.6`, but every benchmark reported in that same card
+> was run at `1.0`. Where card and file disagree, look for a third witness — the
+> evaluation settings, or a `generation_config.json` — rather than preferring one
+> source on principle.
 
 **Speculative decoding.** `SPEC_TYPE=draft-mtp` requires the model to ship MTP heads.
 Most do not. Check `gguf-info.py` for `MTP heads (nextn.*)`; if it reports 0, use
@@ -154,9 +161,13 @@ figures as "what each delivers in its own deployment", not as a controlled bench
 
 Three defaults in this repo look universal and are not:
 
-1. **`SPEC_TYPE=draft-mtp` is model-dependent.** It is the right default for the reference
-   model and unavailable on Ornith. Pointing `.env` at a new model without checking will
-   at best waste the flag.
+1. **`SPEC_TYPE=draft-mtp` is model-dependent**, and in two ways rather than one. It is
+   the right default for the reference model and unavailable on Ornith 1.0, which has no
+   MTP heads. But *having* the heads is not sufficient either: Ornith 1.5 35B-A3B ships
+   them, drafts at 87% acceptance, and is still **24% slower** with `draft-mtp` than
+   without it — because it is a mixture of experts and a token from the target model is
+   too cheap for verification to amortize. Judge this flag by **active** parameters, not
+   by file size or by the presence of the tensors. EXPERIMENTS.md §11.2.
 2. **KV cost does not track model size.** The larger model here has a cache 3.4x cheaper
    per token. Sizing `CTX` from parameter count instead of from `gguf-info.py` gets this
    backwards.
