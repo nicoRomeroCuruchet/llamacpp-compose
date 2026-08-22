@@ -35,12 +35,25 @@ services:
     # The image ENTRYPOINT is already /app/llama-server, so everything below is
     # a llama-server flag rather than a Docker one. Explained one by one in the
     # README.
+    #
+    # The two DRAFT_* lines below use compose's "if set" interpolation, so they
+    # vanish entirely when the variable is empty: an external draft head is
+    # opt-in and costs nothing when unused. They are
+    # for the case SPEC_TYPE alone cannot express: a drafter that lives in its
+    # own file, such as a DFlash head or a grafted MTP head. README section 4.
+    #
+    # -ncmoe keeps the expert tensors of the first N blocks in host RAM instead
+    # of VRAM. The default 0 offloads nothing, so this line changes nothing for
+    # a dense model or a card the weights already fit on. It is what lets a MoE
+    # far larger than the GPU run at a usable speed: only the active experts are
+    # read per token. See README section 5.
     command: >
       -m /models/${MODEL_FILE:?MODEL_FILE is missing from .env}
       --alias ${MODEL_ALIAS:-local-model}
       --host 0.0.0.0 --port 8080
       -c ${CTX:-65536}
       -ngl ${NGL:-all}
+      -ncmoe ${N_CPU_MOE:-0}
       -np 1 -b ${BATCH:-2048} -ub ${UBATCH:-512}
       -ctk ${KV_TYPE_K:-${KV_TYPE:-q8_0}} -ctv ${KV_TYPE_V:-${KV_TYPE:-q8_0}}
       -fa on
@@ -53,6 +66,8 @@ services:
       --spec-type ${SPEC_TYPE:-draft-mtp}
       --spec-draft-n-max ${SPEC_N_MAX:-8}
       --spec-draft-p-min ${SPEC_P_MIN:-0.7}
+      ${DRAFT_MODEL:+--spec-draft-model /models/${DRAFT_MODEL}}
+      ${DRAFT_NGL:+--spec-draft-ngl ${DRAFT_NGL}}
 
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8080/health || exit 1"]

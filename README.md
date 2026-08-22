@@ -28,6 +28,12 @@ taken on faith:
 | Model | Qwen3.8-27B, `UD-Q4_K_XL` (17.9 GB) |
 | Image | `ghcr.io/ggml-org/llama.cpp:server-cuda`, build 10335 |
 
+The image tag floats. Moving from build 10335 to 10423 changed decode on this exact setup
+by **~28%** with nothing else altered (`EXPERIMENTS.md` §1.1), so read the throughput
+figures below as ranked comparisons rather than as absolutes, and run
+`docker run --rm ghcr.io/ggml-org/llama.cpp:server-cuda --version` before comparing them to
+anything.
+
 **A different card or model will give different numbers**, and some of the conclusions
 below depend on the model's architecture rather than on llama.cpp. `EXPERIMENTS.md`
 records how each measurement was taken so you can rerun it on your own hardware;
@@ -225,6 +231,7 @@ model (Ornith 1.0 35B, a hybrid MoE) all the way through as a contrast.
 --host 0.0.0.0 --port 8080    inside the container; outside it is published on loopback
 -c 65536                      context window, in tokens
 -ngl all                      ALL layers on the GPU (what makes this worth doing)
+-ncmoe 0                      MoE expert blocks kept in host RAM; 0 = none (see §5)
 -np 1                         a single slot: the whole KV cache for one conversation
 -b 2048 -ub 512               logical and physical prompt batch sizes (llama.cpp's defaults)
 -ctk q8_0 -ctv q8_0           KV cache quantized to 8 bits (half of what f16 costs)
@@ -235,7 +242,19 @@ model (Ornith 1.0 35B, a hybrid MoE) all the way through as a contrast.
 --spec-type draft-mtp         speculative decoding with the model's own MTP heads
 --spec-draft-n-max 8          tokens drafted per step
 --spec-draft-p-min 0.7        confidence floor for keeping a drafted token
+--spec-draft-model <file>     an external drafter, in its own .gguf (omitted unless set)
+--spec-draft-ngl <n>          that drafter's own GPU layer count (omitted unless set)
 ```
+
+The last two are absent unless `DRAFT_MODEL` is set in `.env`, and exist because the
+drafter a model ships is not always the best one available — sometimes it is not trained at
+all. Published DFlash and grafted-MTP heads are separate files of 236–450 MB. Set
+`SPEC_TYPE=draft-dflash` alongside for a DFlash head.
+
+**Do not judge one by its file size.** A 236 MB DFlash head measured **2,048 MiB resident**
+— 8.7x its download, and more than the in-file `draft-mtp` path costs (`EXPERIMENTS.md`
+§13.7). The weights are never the expense; the drafter's own context and compute buffers
+are, and they scale with `CTX`. Read the VRAM after it loads, not off the file listing.
 
 ### Speculative decoding: use the heads the model already ships
 
@@ -327,7 +346,9 @@ python3 scripts/gguf-info.py /path/to/model.gguf
 
 That prints the cost per token at `f16`, `q8_0` and `q4_0`, the total at several context
 sizes, and — the part that catches people out — **how many blocks actually carry a KV
-cache**. On a dense transformer that is all of them. On a **hybrid** model it is not:
+cache**. Read its per-token figure as a **floor**: it sizes the cache and not the
+context-dependent compute buffers around it, and has undershot the VRAM actually taken by
+17% and by 29% on the two models where both numbers exist (`EXPERIMENTS.md` §12.2). On a dense transformer that is all of them. On a **hybrid** model it is not:
 architectures that interleave full attention with linear-attention or SSM blocks only
 store KV in the full-attention ones, and the rest hold a recurrent state whose size does
 not grow with the context at all. Assuming otherwise overestimates the cache several-fold
@@ -369,6 +390,35 @@ VRAM existing. `EXPERIMENTS.md` §7.
 **If it does not fit**, in order of preference: lower `CTX`, switch `KV_TYPE` to `q4_0`,
 pick a smaller quantization. Touch `NGL` only as a last resort — offloading layers to the
 CPU works but costs an order of magnitude in speed.
+
+### When the model is a mixture of experts: `N_CPU_MOE`
+
+The paragraph above is the right advice for a dense model and the wrong one for a MoE,
+where a fourth option exists that the others do not compare to. Set `N_CPU_MOE=N` and the
+**expert tensors of the first N blocks live in host RAM instead of VRAM**.
+
+That sounds like the `NGL` last resort and behaves nothing like it. Offloading a dense
+layer means every token pays to move it; offloading a MoE block's experts means every
+token pays only for the **experts it actually selects**, which is a small fraction of them.
+Measured from the tensor index of Ornith 1.5 35B-A3B (`docs/profiles/ornith15-35b.env`):
+
+| | |
+|---|---|
+| expert tensors (`*_exps`) | 19,098 MiB — **92.3%** of the file |
+| everything else | 1,599 MiB — 7.7%, and this is what stays on the card |
+| per block | 466 MiB, over 41 blocks |
+| active per token | **8 of 256 experts → 597 MiB** crosses the memory bus |
+
+So a 20.2 GiB model runs on an 8 GiB card, and the decode ceiling is set by host RAM
+bandwidth over 597 MiB per token rather than over the whole 20 GiB. The counterpart is
+that **prefill moves to the CPU and gets dramatically slower**, which is the part to decide
+on before choosing this over a smaller model that fits.
+
+Set it as **low** as the card allows: every block kept in VRAM is one whose experts do not
+cross the bus. Sweep it rather than computing it. `EXPERIMENTS.md` §13 has the method and
+the numbers; `scripts/gguf-info.py` reports the per-block expert cost for your file.
+
+Leave it at `0` for a dense model, or for any model that already fits — it is a no-op.
 
 ---
 

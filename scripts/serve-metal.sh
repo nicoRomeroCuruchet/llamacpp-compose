@@ -61,12 +61,29 @@ build_args() {
         --metrics
         --cache-ram "${CACHE_RAM:-8192}"
     )
+    # MoE expert offload to host RAM. Newer flag than the rest, so it is added
+    # only if the build has it -- and only when asked for, since the default 0
+    # is a no-op that an older build would still reject as unknown.
+    #
+    # CAREFUL on macOS: on Linux this moves weights from VRAM to a SEPARATE pool
+    # of host RAM, which is the whole point. Here memory is unified, so it moves
+    # them from one part of the same pool to another and buys nothing but the
+    # loss of the GPU. Leave N_CPU_MOE unset unless you have measured otherwise.
+    if [ "${N_CPU_MOE:-0}" != "0" ] && "$LLAMA_BIN" --help 2>&1 | grep -q -- '--n-cpu-moe'; then
+        ARGS+=( -ncmoe "${N_CPU_MOE}" )
+    fi
+
     # Speculative decoding is the one part that a slightly older build may not
     # have. preflight checks for it; skip rather than fail if it is missing.
     if "$LLAMA_BIN" --help 2>&1 | grep -q -- '--spec-type'; then
         ARGS+=( --spec-type "${SPEC_TYPE:-draft-mtp}"
                 --spec-draft-n-max "${SPEC_N_MAX:-8}"
                 --spec-draft-p-min "${SPEC_P_MIN:-0.7}" )
+        # An external drafter in its own file -- a DFlash head, a grafted MTP
+        # head. Opt-in: absent unless DRAFT_MODEL names a file. Mirrors the
+        # two DRAFT_* lines in docker-compose.yml.
+        [ -n "${DRAFT_MODEL:-}" ] && ARGS+=( --spec-draft-model "${MODELS_DIR}/${DRAFT_MODEL}" )
+        [ -n "${DRAFT_NGL:-}" ]   && ARGS+=( --spec-draft-ngl "${DRAFT_NGL}" )
     fi
 }
 
