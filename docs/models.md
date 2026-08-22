@@ -58,9 +58,20 @@ breaks nothing visibly — it just generates worse output, quietly.
 Most do not. Check `gguf-info.py` for `MTP heads (nextn.*)`; if it reports 0, use
 `ngram-simple` or `none`.
 
+> Check the **file**, not the model. Ornith 1.0 9B's upstream `config.json` declares
+> `mtp_num_hidden_layers: 1`, and the Unsloth GGUF of it reports `MTP heads 0` — the
+> conversion drops them. Ornith 1.5 35B-A3B is the opposite case: the head survived.
+> `EXPERIMENTS.md` §12.1.
+
 **KV cache size.** Driven by `head_count_kv`, `key_length`/`value_length` and — the term
 that gets assumed rather than read — how many blocks actually carry a KV cache. Between
 the two models below this varies by 3.4x per token.
+
+> `gguf-info.py` sizes the cache and **not** the context-dependent compute buffers beside
+> it, so the VRAM a given `CTX` really costs is higher than it reports: by 17% on Ornith
+> 1.5 35B-A3B, by 29% on Ornith 1.0 9B, in the same direction both times. Treat its number
+> as a floor and confirm with `serve.sh vram` whenever the headroom is thin.
+> `EXPERIMENTS.md` §12.2.
 
 **`CTX`.** Follows from the KV arithmetic and the free VRAM. See README §5.
 
