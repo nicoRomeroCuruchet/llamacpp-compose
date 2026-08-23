@@ -77,3 +77,67 @@ services:
       # first time around.
       start_period: 300s
       retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Fill-in-the-middle completion server, for an editor plugin rather than a
+  # chat client. Behind a compose profile, so `docker compose up -d` and
+  # scripts/serve.sh up leave it alone: it is started explicitly with
+  # `scripts/serve.sh fim up`.
+  #
+  # It is a different job from the service above and the flags reflect that.
+  # No --jinja, no --reasoning-format and no sampling values, because the
+  # editor talks to /infill rather than /v1/chat/completions and llama.cpp
+  # builds the FIM prompt from the model's own special tokens. The batch sizes
+  # are equal on purpose: a completion re-sends a whole window of surrounding
+  # code, so the work is prefill-bound, and an ubatch below the batch buys
+  # nothing while adding a second pass.
+  #
+  # This must be a BASE model. The instruct-tuned sibling of the same weights
+  # has no FIM tokens and returns chat prose in the middle of a function.
+  fim:
+    profiles: ["fim"]
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: ${FIM_CONTAINER_NAME:-llama-fim}
+    restart: "no"
+
+    # Loopback by default, like the chat service. The editor runs on this same
+    # machine; widening it is a security decision, and there is no auth here
+    # either.
+    ports:
+      - "${FIM_BIND:-127.0.0.1}:${FIM_PORT:-8012}:8012"
+
+    volumes:
+      - ${MODELS_DIR:?MODELS_DIR is missing from .env}:/models:ro
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    # -c 0 means "whatever the model was trained for" rather than "unlimited".
+    # --cache-reuse N lets the server keep a prefix of the KV cache when the
+    # next request shares it up to a gap of N tokens. Typing inside a file
+    # changes a little and leaves most of the window identical, so this is what
+    # separates a completion that feels instant from one that re-reads the file
+    # on every keystroke.
+    command: >
+      -m /models/${FIM_MODEL_FILE:?FIM_MODEL_FILE is missing from .env}
+      --alias ${FIM_MODEL_ALIAS:-fim-model}
+      --host 0.0.0.0 --port 8012
+      -c ${FIM_CTX:-0}
+      -ngl ${FIM_NGL:-all}
+      -np 1 -b ${FIM_BATCH:-1024} -ub ${FIM_UBATCH:-1024}
+      --cache-reuse ${FIM_CACHE_REUSE:-256}
+      -fa on
+      --metrics
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8012/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      # Far shorter than the chat service's: this model is under 2 GB.
+      start_period: 60s
+      retries: 5

@@ -167,7 +167,7 @@ $EDITOR .env                         # MODELS_DIR at minimum
 ```
 
 `serve-metal.sh` reads the **same `.env`** and takes the same subcommands as `serve.sh`,
-so §4 to §8 below apply as written — substitute `serve-metal.sh` for `serve.sh`. Only the
+so §4 to §9 below apply as written — substitute `serve-metal.sh` for `serve.sh`. Only the
 backend and the process management differ. Two subcommands are its own:
 
 | | |
@@ -448,6 +448,9 @@ print(r.choices[0].message.content)
 `api_key` is required by the SDK but ignored by the server: there is no authentication.
 That is precisely why the port **is published on loopback only**.
 
+For the editor completion server, which speaks `/infill` rather than the OpenAI API and
+runs on its own port, see §8.
+
 ---
 
 ## 7. Reaching it from the tailnet
@@ -508,7 +511,120 @@ should be turned off — otherwise there are two paths to the same port, and `se
 
 ---
 
-## 8. When something breaks
+## 8. Autocompletion in the editor: the FIM server
+
+A second server, on its own port and its own container, serving a small **base** model
+for fill-in-the-middle completion. It is what an editor plugin talks to while you type.
+It shares nothing with the chat service except the image and the read-only models
+directory, and it does **not** start with `serve.sh up`: it sits behind the compose
+profile `fim`.
+
+```bash
+./scripts/serve.sh fim up        # start it; waits for /health, then prints VRAM
+./scripts/serve.sh fim status
+./scripts/serve.sh fim test      # a real /infill query, with timings
+./scripts/serve.sh fim logs 100
+./scripts/serve.sh fim down
+```
+
+### Why a separate service rather than a flag on the existing one
+
+The two jobs disagree about almost every flag. Chat wants a large context, a chat
+template, a reasoning format and sampling values from the model card; completion wants
+none of those and talks to `/infill`, not `/v1/chat/completions`. They also want to be up
+at different times. Expressing both in one `command:` block would have meant a conditional
+for nearly every line.
+
+### The model has to be a base model
+
+FIM works by feeding the model three special tokens — prefix, suffix, middle — and asking
+it to fill the gap. **Only base checkpoints carry those tokens.** Point this at the
+instruct-tuned sibling of the same weights and it will not fail: it will answer the
+completion as though it were a chat turn, and you get a paragraph of prose spliced into
+the middle of a function.
+
+The reference file is `qwen2.5-coder-1.5b-q8_0.gguf` — 1.65 GB, Apache 2.0, from
+`ggml-org/Qwen2.5-Coder-1.5B-Q8_0-GGUF`. Check what you downloaded before trusting it:
+
+```bash
+python3 scripts/gguf-info.py ~/models/qwen2.5-coder-1.5b-q8_0.gguf | grep base_model
+#   general.base_model.0.name    Qwen2.5 1.5B      <- base. "Qwen2.5 1.5B Instruct" is the wrong file.
+```
+
+Q8 rather than the Q4 used for the large models: at 1.5B the whole file is under 2 GB
+either way, so the quantization saves a rounding error of VRAM and costs completion
+quality, which is the only thing being bought here.
+
+### The flags that differ
+
+| flag | why |
+|---|---|
+| `-c 0` (`FIM_CTX`) | "the context the model was trained for", **not** unlimited. Here that resolves to 32,768; the server log prints it as `n_ctx_slot`. |
+| `--cache-reuse 256` | keeps the KV cache across requests when the new prompt shares a prefix with the old one up to a gap of N tokens. Typing inside a file changes a little and leaves most of the window identical. This is the single flag separating a completion that feels instant from one that re-reads the file on every keystroke. |
+| `-b 1024 -ub 1024` | equal on purpose. A completion re-sends a whole window of surrounding code, so the request is prefill-bound; an ubatch below the batch adds a pass and buys nothing. |
+| no `--jinja`, no `--reasoning-format`, no sampling | the editor drives `/infill` and sends its own samplers. A chat template here would be applied to code. |
+
+### VRAM: it does not fit alongside a large model
+
+On the 8 GB reference laptop, measured:
+
+| | VRAM |
+|---|---|
+| FIM server, `-c 0` (32,768) | **2,963 MiB** |
+| Ornith 1.5 35B-A3B at `N_CPU_MOE=31` | 7,178 MiB |
+| the card | 8,192 MiB total, ~7,840 usable |
+
+**10,141 MiB against 7,840.** The two cannot both be up. Either run them at different
+times, or buy the room from the MoE offload: `EXPERIMENTS.md` §13.2 measures **435 MiB and
+0.77 t/s per expert block** moved to the CPU, so freeing the FIM server's ~3 GB means
+about seven more blocks — `N_CPU_MOE=38` — and costs the chat model roughly 13% of its
+decode. That last figure is interpolated from the sweep, not measured directly.
+
+On a 24 GB card the question does not arise.
+
+### Wiring it to VS Code
+
+The extension is `ggml-org.llama-vscode`, and it POSTs to `<endpoint>/infill`.
+
+```bash
+code --install-extension ggml-org.llama-vscode
+```
+
+Then in `~/.config/Code/User/settings.json` — merge these in, do not replace the file:
+
+```json
+"llama-vscode.endpoint": "http://127.0.0.1:8012",
+"llama-vscode.ask_install_llamacpp": false,
+"llama-vscode.rag_enabled": false
+```
+
+`endpoint` is the only required one. The other two are about what this repo does *not*
+run: the extension otherwise offers to install a native llama.cpp of its own, and its RAG
+feature expects an embeddings server on port 8010 that nothing here provides. Recent
+versions ship a whole chat and agent side as well; none of it is needed for completion,
+and all of it wants endpoints that are not configured.
+
+Port 8012 is not arbitrary — it is what `llama-vscode` and `llama.vim` default to.
+
+### Two things to know
+
+**CORS is open and there is no API key.** The server logs this at startup. It is bound to
+loopback, so the exposure is to this machine, but "this machine" includes any page open in
+your browser: a website can POST to `127.0.0.1:8012`. The consequence here is someone
+else's page burning your GPU, not reading your code — the editor sends context, the server
+does not store it. Do not move `FIM_BIND` off loopback without thinking about it.
+
+**There is no macOS equivalent yet.** `scripts/serve-metal.sh` runs the chat model only;
+it has no `fim` subcommand. The compose profile is Linux-only by construction, and the
+Metal script's PID-file lifecycle would need a second copy of itself. Until then, a mac
+user runs the completion server by hand:
+
+```bash
+llama-server -m ~/models/qwen2.5-coder-1.5b-q8_0.gguf \
+  --port 8012 -c 0 -b 1024 -ub 1024 --cache-reuse 256 -fa on
+```
+
+## 9. When something breaks
 
 | Symptom | Usual cause |
 |---|---|
@@ -542,7 +658,7 @@ docker run --rm ghcr.io/ggml-org/llama.cpp:server-cuda --help    # this build's 
 
 ---
 
-## 9. Decisions taken
+## 10. Decisions taken
 
 - **`restart: "no"`.** The model holds nearly all of the VRAM; starting on every reboot
   would keep the card busy even on days it is needed for training. It is brought up by
@@ -559,7 +675,7 @@ docker run --rm ghcr.io/ggml-org/llama.cpp:server-cuda --help    # this build's 
 
 ---
 
-## 10. License
+## 11. License
 
 MIT — see `LICENSE`.
 

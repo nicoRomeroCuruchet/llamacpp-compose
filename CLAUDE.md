@@ -38,6 +38,7 @@ scripts/serve.sh           up | down | status | logs | test | vram
 scripts/download-model.sh  fetch a .gguf from HuggingFace and verify it
 scripts/gguf-info.py       read a .gguf header: architecture and KV cache arithmetic
 scripts/serve-metal.sh     the macOS/Metal equivalent of serve.sh — no Docker involved
+                           (chat only: it has no `fim` subcommand, README §8)
 README.md                  full documentation
 EXPERIMENTS.md             the tuning lab notebook: what was measured and why
 docs/architecture.md       how it works end to end; read before structural changes
@@ -110,6 +111,14 @@ cd ~/llm-server
 ./scripts/serve.sh logs 100
 ./scripts/serve.sh down
 ```
+
+**A second server exists for editor autocompletion** — a small base model doing
+fill-in-the-middle on port 8012, in the same compose file behind the profile `fim`. It is
+a different service, not a different `.env`: `./scripts/serve.sh fim up|down|status|test`.
+It does not start with `serve.sh up` and `serve.sh down` deliberately leaves it alone.
+
+On the 8 GB reference laptop **it does not fit alongside a large model** — 2,963 MiB plus
+7,178 exceeds the card. README §8 has the arithmetic and the way out.
 
 **Changing the model** means editing `MODEL_FILE` and `MODEL_ALIAS` in `.env`, checking the
 sampling values against the new model's card (they are model-specific — see README §4), and
