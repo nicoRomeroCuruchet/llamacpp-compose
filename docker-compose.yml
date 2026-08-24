@@ -131,7 +131,7 @@ services:
     # separates a completion that feels instant from one that re-reads the file
     # on every keystroke.
     command: >
-      -m /models/${FIM_MODEL_FILE:?FIM_MODEL_FILE is missing from .env}
+      -m /models/${FIM_MODEL_FILE:-unset.gguf}
       --alias ${FIM_MODEL_ALIAS:-fim-model}
       --host 0.0.0.0 --port 8012
       -c ${FIM_CTX:-0}

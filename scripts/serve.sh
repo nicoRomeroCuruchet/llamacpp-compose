@@ -107,6 +107,16 @@ print("usage    :", d.get("usage"))
     fim)
         case "${2:-status}" in
             up)
+                # Checked here rather than with a :? in the compose file.
+                # Compose interpolates every service before it filters by
+                # profile, so a required variable on this optional service made
+                # *every* subcommand fail -- including `serve.sh up` -- on any
+                # machine whose .env predates the FIM server. See README
+                # section 8.
+                if [ -z "${FIM_MODEL_FILE:-}" ]; then
+                    echo "FIM_MODEL_FILE is not set in .env — see .env.example and README section 8." >&2
+                    exit 1
+                fi
                 docker compose --profile fim up -d fim
                 wait_until_ready "$FIM_BASE" fim || exit 1
                 "$0" vram
