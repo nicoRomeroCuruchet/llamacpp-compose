@@ -58,6 +58,7 @@ services:
       --alias ${MODEL_ALIAS:-local-model}
       --host 0.0.0.0 --port 8080
       ${API_KEY:+--api-key} ${API_KEY:-}
+      ${CHAT_TEMPLATE_FILE:+--chat-template-file /models/${CHAT_TEMPLATE_FILE}}
       -c ${CTX:-65536}
       -ngl ${NGL:-all}
       -ncmoe ${N_CPU_MOE:-0}

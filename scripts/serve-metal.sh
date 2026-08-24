@@ -66,6 +66,10 @@ build_args() {
     # before exposing the server past a trusted network -- there is no other
     # authentication. README section 7.
     [ -n "${API_KEY:-}" ] && ARGS+=( --api-key "${API_KEY}" )
+    # Overrides the Jinja template baked into the .gguf. Mirrors
+    # ${CHAT_TEMPLATE_FILE:+...} in docker-compose.yml. The file lives in
+    # MODELS_DIR beside the model. README section 4.
+    [ -n "${CHAT_TEMPLATE_FILE:-}" ] && ARGS+=( --chat-template-file "${MODELS_DIR}/${CHAT_TEMPLATE_FILE}" )
 
     # MoE expert offload to host RAM. Newer flag than the rest, so it is added
     # only if the build has it -- and only when asked for, since the default 0
