@@ -509,6 +509,63 @@ exists solely on the tailscale interface. In that case `tailscale serve` adds no
 should be turned off — otherwise there are two paths to the same port, and `serve` returns
 502 while proxying to a loopback address nothing listens on anymore.
 
+### Authentication: `API_KEY`
+
+Everything above is tailnet-only, so the server runs open. `API_KEY` in `.env` is what
+turns that off:
+
+```bash
+API_KEY=$(openssl rand -hex 24)   # in .env, then ./scripts/serve.sh down && up
+```
+
+Empty — the default — and the flag disappears from the command entirely, which is what
+you want while nothing outside a trusted network can reach the port. Set, and every
+request must carry `Authorization: Bearer <key>`; anything else gets a 401.
+
+It is the ordinary OpenAI-compatible field, so no client needs special handling:
+
+```python
+c = OpenAI(base_url="https://gpu-box.tailnet-name.ts.net/v1", api_key="<key>")
+```
+
+llama.cpp's own web UI has a box for it under the settings gear, stored in the browser's
+local storage, so a browser user pastes it once.
+
+**Set it before anything below this line.** It is the server's only access control.
+
+### Reaching it from outside the tailnet: a Cloudflare quick tunnel
+
+To hand the server to people who are *not* on the tailnet — a demo, a class, a few hours
+of shared access — a Cloudflare quick tunnel gives a public HTTPS URL without an account,
+a domain, or an open router port. `cloudflared` dials **out** to Cloudflare and traffic
+comes back down that connection.
+
+Run it as a container so nothing is installed on the host, and on the host network so it
+can see the loopback port the server publishes:
+
+```bash
+docker run -d --name cf-tunnel --network host --restart no \
+  cloudflare/cloudflared:latest tunnel --no-autoupdate --url http://127.0.0.1:8080
+
+docker logs cf-tunnel 2>&1 | grep -o 'https://.*trycloudflare.com'
+```
+
+The URL is random, assigned on start, and **changes every time the tunnel restarts** —
+that is what makes it right for a few hours and wrong for anything permanent. Tear it down
+with `docker rm -f cf-tunnel`, and the URL dies with it.
+
+Two things to be clear about before running it:
+
+- **It is the public internet, not a private link.** The URL is unlisted, not secret.
+  Anyone who has it, or who finds it in a referer header or a pasted screenshot, reaches
+  the GPU. `API_KEY` above is not optional here.
+- **The tunnel does not authenticate anyone.** A quick tunnel has no access control of its
+  own; Cloudflare Access can add it, but that needs an account and a named tunnel. Until
+  then the API key is the whole of the security.
+
+A quick tunnel is also rate-limited and unsupported by Cloudflare — fine for a handful of
+people, not for a service.
+
 ---
 
 ## 8. Autocompletion in the editor: the FIM server

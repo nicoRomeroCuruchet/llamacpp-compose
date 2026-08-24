@@ -61,6 +61,12 @@ build_args() {
         --metrics
         --cache-ram "${CACHE_RAM:-8192}"
     )
+    # Optional API key. Mirrors ${API_KEY:+--api-key} in docker-compose.yml:
+    # absent when empty, which is the right default for a loopback port. Set it
+    # before exposing the server past a trusted network -- there is no other
+    # authentication. README section 7.
+    [ -n "${API_KEY:-}" ] && ARGS+=( --api-key "${API_KEY}" )
+
     # MoE expert offload to host RAM. Newer flag than the rest, so it is added
     # only if the build has it -- and only when asked for, since the default 0
     # is a no-op that an older build would still reject as unknown.

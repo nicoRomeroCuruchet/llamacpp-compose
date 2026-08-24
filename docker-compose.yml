@@ -36,6 +36,12 @@ services:
     # a llama-server flag rather than a Docker one. Explained one by one in the
     # README.
     #
+    # API_KEY uses the same "if set" interpolation as the DRAFT_* lines: leave it
+    # empty and the server stays open, which is the right default for a port
+    # bound to loopback. Set it and every request must carry
+    # `Authorization: Bearer <key>`. Required before exposing the server beyond
+    # a trusted network -- there is no other authentication. README section 7.
+    #
     # The two DRAFT_* lines below use compose's "if set" interpolation, so they
     # vanish entirely when the variable is empty: an external draft head is
     # opt-in and costs nothing when unused. They are
@@ -51,6 +57,7 @@ services:
       -m /models/${MODEL_FILE:?MODEL_FILE is missing from .env}
       --alias ${MODEL_ALIAS:-local-model}
       --host 0.0.0.0 --port 8080
+      ${API_KEY:+--api-key} ${API_KEY:-}
       -c ${CTX:-65536}
       -ngl ${NGL:-all}
       -ncmoe ${N_CPU_MOE:-0}
